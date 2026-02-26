@@ -23,7 +23,7 @@ class EngineState:
         self.last_price = 0.0
         self.total_scans = 0
         self.start_time = datetime.now()
-        self.check_delay = 60 # Sync with M1
+        self.check_delay = 60 # Default M1
 
 state = EngineState()
 app = Flask(__name__)
@@ -31,7 +31,7 @@ RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
 @app.route('/')
 def home():
-    return f"APEX UNRESTRICTED: {'ACTIVE' if state.is_running else 'PAUSED'} | TF: {state.timeframe}"
+    return f"APEX SOVEREIGN: {'ACTIVE' if state.is_running else 'PAUSED'} | TF: {state.timeframe}"
 
 def run_server():
     port = int(os.environ.get("PORT", 10000))
@@ -65,7 +65,6 @@ class ApexQuantum:
         return model
 
     def calculate_binary_probability(self, df, direction):
-        # Gaussian Z-Score Logic for 1-period forward projection
         returns = df['close'].pct_change().dropna()
         mu, sigma = returns.mean(), returns.std()
         t = 1 
@@ -78,7 +77,6 @@ class ApexQuantum:
         df['ema50'] = df['close'].ewm(span=50).mean()
         df['delta'] = df['close'].pct_change()
         
-        # Mapping to 6-feature input from v12
         for i in range(2): df[f'feat_{i}'] = 0 
         feat_list = ['close', 'ema10', 'ema50', 'delta', 'feat_0', 'feat_1']
         
@@ -88,14 +86,11 @@ class ApexQuantum:
         scaled = self.scaler.fit_transform(data)
         X = np.array([scaled[-20:]])
         
-        # Neural Prediction
         pred = self.model.predict(X, verbose=0)
         target_price = self.scaler.inverse_transform(np.concatenate([pred, np.zeros((1,5))], axis=1))[0][0]
         
         current_price = df['close'].iloc[-1]
         direction = "BUY 🔵" if target_price > current_price else "SELL 🔴"
-        
-        # Binary Prob from v12
         prob = self.calculate_binary_probability(df, "BUY" if target_price > current_price else "SELL")
         trend = "📈 UP" if current_price > df['ema50'].iloc[-1] else "📉 DOWN"
         
@@ -118,6 +113,10 @@ async def m5_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state.timeframe, state.check_delay = "5m", 300
     await update.message.reply_text("⌛ **TF: M5.** Signals every 5m.", parse_mode="Markdown")
 
+async def m15_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    state.timeframe, state.check_delay = "15m", 900
+    await update.message.reply_text("🏛 **TF: M15.** Structural trend logic active.", parse_mode="Markdown")
+
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uptime = str(datetime.now() - state.start_time).split('.')[0]
     msg = (f"🏛 **APEX COMMAND CENTER**\n"
@@ -133,7 +132,6 @@ async def master_loop(bot_app, engine):
     while True:
         if state.is_running:
             try:
-                # Optimized for EURUSD focus
                 df = yf.download("EURUSD=X", interval=state.timeframe, period="1d", progress=False)
                 if not df.empty:
                     if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
@@ -143,10 +141,8 @@ async def master_loop(bot_app, engine):
                     res = await engine.analyze(df)
                     if res:
                         direction, prob, price, target, trend = res
-                        # Probability meter from v12
                         meter = "◼️" * (prob // 10) + "◻️" * (10 - (prob // 10))
                         
-                        # Unrestricted: Sending anything >= 50%
                         msg = (f"🎯 **QUANTUM SIGNAL: EURUSD**\n"
                                f"━━━━━━━━━━━━━━━━━━━━\n"
                                f"📍 ACTION: **{direction}**\n"
@@ -154,11 +150,10 @@ async def master_loop(bot_app, engine):
                                f"🕒 TREND: {trend}\n"
                                f"💰 ENTRY: {price:.5f} | 🔮 TARGET: {target:.5f}\n"
                                f"━━━━━━━━━━━━━━━━━━━━\n"
-                               f"⚡ TF: {state.timeframe.upper()} | UNRESTRICTED FEED")
+                               f"⚡ TF: {state.timeframe.upper()} | UNRESTRICTED")
                         await bot_app.bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
             except Exception as e: print(f"Loop Error: {e}")
         
-        # Perfect Timing: Sync with TF to ensure no missed signals
         await asyncio.sleep(state.check_delay)
 
 def main():
@@ -172,6 +167,7 @@ def main():
     application.add_handler(CommandHandler("status", status_cmd))
     application.add_handler(CommandHandler("m1", m1_cmd))
     application.add_handler(CommandHandler("m5", m5_cmd))
+    application.add_handler(CommandHandler("m15", m15_cmd))
     
     loop = asyncio.get_event_loop()
     loop.create_task(master_loop(application, engine))

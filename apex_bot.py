@@ -7,14 +7,15 @@ import requests
 from flask import Flask
 from threading import Thread
 from datetime import datetime
+from scipy.stats import norm
 import tensorflow as tf
-from sklearn.preprocessing import RobustScaler
+from sklearn.preprocessing import MinMaxScaler
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import LSTM, Dense, Input, Dropout, Bidirectional
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 
-# ================= 1. GLOBAL SOVEREIGN STATE =================
+# ================= 1. SOVEREIGN STATE & RENDER =================
 class EngineState:
     def __init__(self):
         self.is_running = True
@@ -22,16 +23,15 @@ class EngineState:
         self.last_price = 0.0
         self.total_scans = 0
         self.start_time = datetime.now()
+        self.check_delay = 60 # Sync with M1
 
 state = EngineState()
-
-# ================= 2. RENDER & ANTI-SLEEP =================
 app = Flask(__name__)
 RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL") 
 
 @app.route('/')
 def home():
-    return f"APEX ENGINE: {'RUNNING' if state.is_running else 'PAUSED'} | TIMEFRAME: {state.timeframe} 🚀"
+    return f"APEX UNRESTRICTED: {'ACTIVE' if state.is_running else 'PAUSED'} | TF: {state.timeframe}"
 
 def run_server():
     port = int(os.environ.get("PORT", 10000))
@@ -47,99 +47,125 @@ async def self_ping():
             try: requests.get(RENDER_URL)
             except: pass
 
-# ================= 3. THE UNRESTRICTED APEX ENGINE =================
-class ApexEngine:
+# ================= 2. QUANTUM ENGINE (UNRESTRICTED) =================
+class ApexQuantum:
     def __init__(self):
+        self.scaler = MinMaxScaler()
         self.model = self._build_model()
-        self.scaler = RobustScaler()
 
     def _build_model(self):
         model = Sequential([
-            Input(shape=(30, 8)),
-            Bidirectional(LSTM(128, return_sequences=True)),
-            Dropout(0.2),
-            Bidirectional(LSTM(64)),
-            Dense(32, activation="swish"),
-            Dense(1, activation="sigmoid")
+            Input(shape=(20, 6)),
+            Bidirectional(LSTM(64, return_sequences=True)),
+            LSTM(32),
+            Dense(16, activation="relu"),
+            Dense(1)
         ])
-        model.compile(loss="binary_crossentropy", optimizer="adam")
+        model.compile(loss="mse", optimizer="adam")
         return model
 
-    async def analyze(self, df):
-        df['returns'] = df['Close'].pct_change()
-        df['ema_f'] = df['Close'].ewm(span=7).mean()
-        df['ema_s'] = df['Close'].ewm(span=25).mean()
-        features = ['Open', 'High', 'Low', 'Close', 'Volume', 'returns', 'ema_f', 'ema_s']
-        data = df[features].ffill().dropna().values
-        if len(data) < 30: return None
-        scaled = self.scaler.fit_transform(data)
-        X = np.array([scaled[-30:]])
-        
-        # Bayesian Probability Check
-        mc_preds = [self.model(X, training=True).numpy()[0][0] for _ in range(15)]
-        prob = np.mean(mc_preds)
-        
-        # 50% ABOVE RULE: Always signals the dominant direction
-        if prob >= 0.50:
-            return "BUY 🟢", int(prob * 100)
-        else:
-            return "SELL 🔴", int((1 - prob) * 100)
+    def calculate_binary_probability(self, df, direction):
+        # Gaussian Z-Score Logic for 1-period forward projection
+        returns = df['close'].pct_change().dropna()
+        mu, sigma = returns.mean(), returns.std()
+        t = 1 
+        z = (mu * t) / (sigma * np.sqrt(t)) if sigma != 0 else 0
+        prob = norm.cdf(z)
+        return int(prob * 100) if direction == "BUY" else int((1 - prob) * 100)
 
-# ================= 4. TELEGRAM COMMANDS =================
+    async def analyze(self, df):
+        df['ema10'] = df['close'].ewm(span=10).mean()
+        df['ema50'] = df['close'].ewm(span=50).mean()
+        df['delta'] = df['close'].pct_change()
+        
+        # Mapping to 6-feature input from v12
+        for i in range(2): df[f'feat_{i}'] = 0 
+        feat_list = ['close', 'ema10', 'ema50', 'delta', 'feat_0', 'feat_1']
+        
+        data = df[feat_list].fillna(0).values
+        if len(data) < 20: return None
+        
+        scaled = self.scaler.fit_transform(data)
+        X = np.array([scaled[-20:]])
+        
+        # Neural Prediction
+        pred = self.model.predict(X, verbose=0)
+        target_price = self.scaler.inverse_transform(np.concatenate([pred, np.zeros((1,5))], axis=1))[0][0]
+        
+        current_price = df['close'].iloc[-1]
+        direction = "BUY 🔵" if target_price > current_price else "SELL 🔴"
+        
+        # Binary Prob from v12
+        prob = self.calculate_binary_probability(df, "BUY" if target_price > current_price else "SELL")
+        trend = "📈 UP" if current_price > df['ema50'].iloc[-1] else "📉 DOWN"
+        
+        return direction, prob, current_price, target_price, trend
+
+# ================= 3. SOVEREIGN COMMANDS =================
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state.is_running = True
-    await update.message.reply_text("⚡ **GOD MODE: ENABLED.** Monitoring EURUSD. ⚡", parse_mode="Markdown")
+    await update.message.reply_text("⚡ **GOD MODE: ENABLED.** Engine Initialized. ⚡", parse_mode="Markdown")
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state.is_running = False
     await update.message.reply_text("🛑 **SYSTEM HALTED.** 🛑", parse_mode="Markdown")
 
 async def m1_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state.timeframe = "1m"
-    await update.message.reply_text("⏱ **TIMEFRAME: M1.**", parse_mode="Markdown")
+    state.timeframe, state.check_delay = "1m", 60
+    await update.message.reply_text("⏱ **TF: M1.** Signals every 60s.", parse_mode="Markdown")
 
 async def m5_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state.timeframe = "5m"
-    await update.message.reply_text("⌛ **TIMEFRAME: M5.**", parse_mode="Markdown")
+    state.timeframe, state.check_delay = "5m", 300
+    await update.message.reply_text("⌛ **TF: M5.** Signals every 5m.", parse_mode="Markdown")
 
 async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     uptime = str(datetime.now() - state.start_time).split('.')[0]
-    status_msg = (f"🏛 **APEX COMMAND CENTER**\n"
-                  f"📡 STATUS: {'🟢 ACTIVE' if state.is_running else '🔴 PAUSED'}\n"
-                  f"🕒 TIMEFRAME: {state.timeframe.upper()}\n"
-                  f"💰 EURUSD: {state.last_price:.5f}\n"
-                  f"⏳ UPTIME: {uptime}")
-    await update.message.reply_text(status_msg, parse_mode="Markdown")
+    msg = (f"🏛 **APEX COMMAND CENTER**\n"
+           f"📡 STATUS: {'🟢 ACTIVE' if state.is_running else '🔴 PAUSED'}\n"
+           f"🕒 TF: {state.timeframe.upper()}\n"
+           f"💰 EURUSD: {state.last_price:.5f}\n"
+           f"⏳ UPTIME: {uptime}")
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
-# ================= 5. MASTER EXECUTION LOOP =================
+# ================= 4. MASTER SYNC LOOP =================
 async def master_loop(bot_app, engine):
-    CHAT_ID = os.environ.get("CHAT_ID")
+    CHAT_ID = os.environ.get("CHAT_ID", "1936667510")
     while True:
         if state.is_running:
             try:
+                # Optimized for EURUSD focus
                 df = yf.download("EURUSD=X", interval=state.timeframe, period="1d", progress=False)
                 if not df.empty:
-                    state.last_price = df['Close'].iloc[-1]
-                    state.total_scans += 1
-                    result = await engine.analyze(df)
-                    if result:
-                        action, confidence = result
-                        # High Frequency: Always sends the most likely direction
-                        msg = (f"🏛 **APEX ANALYSIS: EURUSD**\n"
+                    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+                    df.columns = [c.lower() for c in df.columns]
+                    
+                    state.last_price = df['close'].iloc[-1]
+                    res = await engine.analyze(df)
+                    if res:
+                        direction, prob, price, target, trend = res
+                        # Probability meter from v12
+                        meter = "◼️" * (prob // 10) + "◻️" * (10 - (prob // 10))
+                        
+                        # Unrestricted: Sending anything >= 50%
+                        msg = (f"🎯 **QUANTUM SIGNAL: EURUSD**\n"
                                f"━━━━━━━━━━━━━━━━━━━━\n"
-                               f"📍 BIAS: **{action}**\n"
-                               f"📊 PROBABILITY: {confidence}%\n"
-                               f"💰 PRICE: {state.last_price:.5f}\n"
-                               f"━━━━━━━━━━━━━━━━━━━━")
+                               f"📍 ACTION: **{direction}**\n"
+                               f"📊 PROBABILITY: [{meter}] {prob}%\n"
+                               f"🕒 TREND: {trend}\n"
+                               f"💰 ENTRY: {price:.5f} | 🔮 TARGET: {target:.5f}\n"
+                               f"━━━━━━━━━━━━━━━━━━━━\n"
+                               f"⚡ TF: {state.timeframe.upper()} | UNRESTRICTED FEED")
                         await bot_app.bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
             except Exception as e: print(f"Loop Error: {e}")
-        await asyncio.sleep(60)
+        
+        # Perfect Timing: Sync with TF to ensure no missed signals
+        await asyncio.sleep(state.check_delay)
 
 def main():
     keep_alive()
-    engine = ApexEngine()
-    TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
-    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    engine = ApexQuantum()
+    TOKEN = os.environ.get("TELEGRAM_TOKEN", "8556975192:AAHwDlJ6okYa46HEsHq_tZgYhR6V9BTXu6A")
+    application = ApplicationBuilder().token(TOKEN).build()
     
     application.add_handler(CommandHandler("start", start_cmd))
     application.add_handler(CommandHandler("stop", stop_cmd))

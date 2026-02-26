@@ -234,7 +234,7 @@ async def master_loop(bot_app, engine):
                            f"⚡ TF: {state.timeframe.upper()} | 🆔 `{INSTANCE_ID}`")
                     await bot_app.bot.send_message(CHAT_ID, msg, parse_mode="Markdown", reply_markup=get_markup())
                     
-        await asyncio.sleep(state.check_delay)
+        await asyncio.sleep(max(1, state.check_delay - 5))
 
 # Flask Service
 server = Flask(__name__)
@@ -259,3 +259,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

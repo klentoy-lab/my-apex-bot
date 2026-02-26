@@ -199,7 +199,7 @@ async def master_loop(bot_app, engine):
 def main():
     keep_alive()
     engine = ApexPrecision()
-    TOKEN = os.environ.get("TELEGRAM_TOKEN", "8556975192:AAHwDlJ6okYa46HEsHq_tZgYhR6V9BTXu6A")
+    TOKEN = os.environ.get("TELEGRAM_TOKEN", "8211041373:AAG7DnleQ-0UpS1zL83aB6E2In6YennVf-c")
     app_bot = ApplicationBuilder().token(TOKEN).build()
     
     app_bot.add_handler(CommandHandler("start", start_cmd))
@@ -215,3 +215,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -7,3 +7,11 @@ scikit-learn
 python-telegram-bot
 requests
 xgboost
+pandas
+numpy
+requests
+tensorflow
+scikit-learn
+ta
+python-telegram-bot
+flask

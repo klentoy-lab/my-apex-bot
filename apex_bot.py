@@ -9,170 +9,209 @@ from threading import Thread
 from datetime import datetime
 from scipy.stats import norm
 import tensorflow as tf
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import RobustScaler
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Input, Dropout, Bidirectional
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional, Input
+from sklearn.linear_model import LogisticRegression
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, ContextTypes
+import xgboost as xgb
 
-# ================= 1. SOVEREIGN STATE & RENDER =================
+# ====================== 1. ENGINE STATE ======================
 class EngineState:
     def __init__(self):
         self.is_running = True
-        self.timeframe = "1m" 
+        self.timeframe = "1m"
+        self.check_delay = 60
         self.last_price = 0.0
-        self.total_scans = 0
         self.start_time = datetime.now()
-        self.check_delay = 60 # Default M1
-
 state = EngineState()
+
+# ====================== 2. FLASK KEEPALIVE ======================
 app = Flask(__name__)
-RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL") 
+RENDER_URL = os.environ.get("RENDER_EXTERNAL_URL")
 
 @app.route('/')
-def home():
-    return f"APEX SOVEREIGN: {'ACTIVE' if state.is_running else 'PAUSED'} | TF: {state.timeframe}"
+def home(): 
+    return f"🏛 APEX SOVEREIGN STATUS: {'ACTIVE' if state.is_running else 'PAUSED'} | TF: {state.timeframe}"
 
-def run_server():
+def run_server(): 
+    # Render requires dynamic port binding
     port = int(os.environ.get("PORT", 10000))
     app.run(host='0.0.0.0', port=port)
 
-def keep_alive():
+def keep_alive(): 
     Thread(target=run_server, daemon=True).start()
 
 async def self_ping():
     while True:
-        await asyncio.sleep(840) 
+        await asyncio.sleep(840)
         if RENDER_URL:
             try: requests.get(RENDER_URL)
             except: pass
 
-# ================= 2. QUANTUM ENGINE (UNRESTRICTED) =================
-class ApexQuantum:
+# ====================== 3. ENHANCED APEX BRAIN ======================
+class ApexPrecision:
     def __init__(self):
-        self.scaler = MinMaxScaler()
-        self.model = self._build_model()
-
-    def _build_model(self):
+        self.scaler = RobustScaler()
+        self.lstm_model = self._build_lstm()
+        self.xgb_model = xgb.XGBClassifier(n_estimators=300, max_depth=6, learning_rate=0.03, subsample=0.8, eval_metric='logloss')
+        self.meta_model = LogisticRegression()
+        
+    def _build_lstm(self):
         model = Sequential([
-            Input(shape=(20, 6)),
-            Bidirectional(LSTM(64, return_sequences=True)),
-            LSTM(32),
-            Dense(16, activation="relu"),
-            Dense(1)
+            Input(shape=(30, 13)),
+            Bidirectional(LSTM(128, return_sequences=True)),
+            Dropout(0.2),
+            Bidirectional(LSTM(64)),
+            Dense(32, activation="swish"),
+            Dense(1, activation="sigmoid")
         ])
-        model.compile(loss="mse", optimizer="adam")
+        model.compile(loss="binary_crossentropy", optimizer="adam")
         return model
 
-    def calculate_binary_probability(self, df, direction):
-        returns = df['close'].pct_change().dropna()
+    def add_features(self, df):
+        # Ensure columns are Capitalized for the math logic
+        df.columns = [c.capitalize() for c in df.columns]
+        df['Ema10'] = df['Close'].ewm(span=10).mean()
+        df['Ema20'] = df['Close'].ewm(span=20).mean()
+        df['Ema50'] = df['Close'].ewm(span=50).mean()
+        
+        # RSI Calculation
+        delta = df['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
+        loss = (delta.where(delta < 0, 0).abs()).rolling(window=14).mean()
+        rs = gain / loss
+        df['Rsi'] = 100 - (100 / (1 + rs))
+        
+        df['Atr'] = df['High'] - df['Low']
+        df['Volatility'] = df['Close'].rolling(14).std()
+        df['Returns'] = df['Close'].pct_change()
+        df['Bb_h'] = df['Close'].rolling(20).mean() + 2*df['Close'].rolling(20).std()
+        df['Bb_l'] = df['Close'].rolling(20).mean() - 2*df['Close'].rolling(20).std()
+        df.fillna(0, inplace=True)
+        return df
+
+    def get_gaussian_prob(self, df, action):
+        returns = df['Close'].pct_change().dropna()
         mu, sigma = returns.mean(), returns.std()
-        t = 1 
-        z = (mu * t) / (sigma * np.sqrt(t)) if sigma != 0 else 0
+        z = mu / (sigma if sigma != 0 else 0.0001)
         prob = norm.cdf(z)
-        return int(prob * 100) if direction == "BUY" else int((1 - prob) * 100)
+        return int(prob*100) if action == "BUY" else int((1-prob)*100)
 
     async def analyze(self, df):
-        df['ema10'] = df['close'].ewm(span=10).mean()
-        df['ema50'] = df['close'].ewm(span=50).mean()
-        df['delta'] = df['close'].pct_change()
-        
-        for i in range(2): df[f'feat_{i}'] = 0 
-        feat_list = ['close', 'ema10', 'ema50', 'delta', 'feat_0', 'feat_1']
-        
-        data = df[feat_list].fillna(0).values
-        if len(data) < 20: return None
-        
-        scaled = self.scaler.fit_transform(data)
-        X = np.array([scaled[-20:]])
-        
-        pred = self.model.predict(X, verbose=0)
-        target_price = self.scaler.inverse_transform(np.concatenate([pred, np.zeros((1,5))], axis=1))[0][0]
-        
-        current_price = df['close'].iloc[-1]
-        direction = "BUY 🔵" if target_price > current_price else "SELL 🔴"
-        prob = self.calculate_binary_probability(df, "BUY" if target_price > current_price else "SELL")
-        trend = "📈 UP" if current_price > df['ema50'].iloc[-1] else "📉 DOWN"
-        
-        return direction, prob, current_price, target_price, trend
+        df = self.add_features(df)
+        features = ['Close','Open','High','Low','Ema10','Ema20','Ema50','Rsi','Atr','Volatility','Returns','Bb_h','Bb_l']
+        data = df[features].values
+        if len(data) < 30: return None
 
-# ================= 3. SOVEREIGN COMMANDS =================
+        scaled = self.scaler.fit_transform(data)
+        X_lstm = np.array([scaled[-30:]])
+        
+        # Bayesian AI Consensus
+        preds = [self.lstm_model(X_lstm, training=True).numpy()[0][0] for _ in range(10)]
+        lstm_prob = np.mean(preds)
+        
+        # XGBoost Boosted Logic
+        X_xgb = scaled
+        y = (df['Close'].shift(-1) > df['Close']).astype(int).values
+        try:
+            self.xgb_model.fit(X_xgb[:-1], y[:-1])
+            xgb_prob = self.xgb_model.predict_proba(X_xgb[-1:].reshape(1,-1))[0][1]
+        except:
+            xgb_prob = lstm_prob
+
+        final_prob = 0.5*xgb_prob + 0.5*lstm_prob
+        direction = "BUY 🔵" if final_prob > 0.5 else "SELL 🔴"
+        math_prob = self.get_gaussian_prob(df, "BUY" if final_prob > 0.5 else "SELL")
+        
+        # Weighted Accuracy Output
+        final_confidence = int(final_prob*70 + math_prob*0.3)
+        trend = "📈 UP" if df['Close'].iloc[-1] > df['Ema50'].iloc[-1] else "📉 DOWN"
+        return direction, final_confidence, df['Close'].iloc[-1], trend
+
+# ====================== 4. TELEGRAM INTERFACE ======================
+def get_markup():
+    keyboard = [
+        [InlineKeyboardButton("🚀 Start", callback_data="start"),
+         InlineKeyboardButton("🛑 Stop", callback_data="stop"),
+         InlineKeyboardButton("📊 Status", callback_data="status")],
+        [InlineKeyboardButton("⏱ M1", callback_data="m1"),
+         InlineKeyboardButton("⌛ M5", callback_data="m5"),
+         InlineKeyboardButton("📉 Refresh", callback_data="refresh")]
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+    
+    if data == "start": state.is_running = True
+    elif data == "stop": state.is_running = False
+    elif data == "status": 
+        uptime = str(datetime.now() - state.start_time).split('.')[0]
+        await query.message.reply_text(f"🏛 **SYSTEM STATUS**\nEngine: {'🟢 ACTIVE' if state.is_running else '🔴 PAUSED'}\nTF: {state.timeframe.upper()}\nUptime: {uptime}")
+        return
+    elif data in ["m1", "m5"]: 
+        state.timeframe = data
+        state.check_delay = 60 if data == "m1" else 300
+    
+    await query.edit_message_text(f"🕹 **Command Processed**: {data.upper()}\nSystem is now synced.", reply_markup=get_markup())
+
 async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state.is_running = True
-    await update.message.reply_text("⚡ **GOD MODE: ENABLED.** Engine Initialized. ⚡", parse_mode="Markdown")
+    await update.message.reply_text("💎 **APEX PRECISION v16**\nQuantum-XGBoost Engine Live.", reply_markup=get_markup())
 
 async def stop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     state.is_running = False
-    await update.message.reply_text("🛑 **SYSTEM HALTED.** 🛑", parse_mode="Markdown")
+    await update.message.reply_text("🛑 **SYSTEM PAUSED**\nMonitoring Standby.", reply_markup=get_markup())
 
-async def m1_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state.timeframe, state.check_delay = "1m", 60
-    await update.message.reply_text("⏱ **TF: M1.** Signals every 60s.", parse_mode="Markdown")
-
-async def m5_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state.timeframe, state.check_delay = "5m", 300
-    await update.message.reply_text("⌛ **TF: M5.** Signals every 5m.", parse_mode="Markdown")
-
-async def m15_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    state.timeframe, state.check_delay = "15m", 900
-    await update.message.reply_text("🏛 **TF: M15.** Structural trend logic active.", parse_mode="Markdown")
-
-async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    uptime = str(datetime.now() - state.start_time).split('.')[0]
-    msg = (f"🏛 **APEX COMMAND CENTER**\n"
-           f"📡 STATUS: {'🟢 ACTIVE' if state.is_running else '🔴 PAUSED'}\n"
-           f"🕒 TF: {state.timeframe.upper()}\n"
-           f"💰 EURUSD: {state.last_price:.5f}\n"
-           f"⏳ UPTIME: {uptime}")
-    await update.message.reply_text(msg, parse_mode="Markdown")
-
-# ================= 4. MASTER SYNC LOOP =================
+# ====================== 5. MASTER LOOP ======================
 async def master_loop(bot_app, engine):
     CHAT_ID = os.environ.get("CHAT_ID", "1936667510")
     while True:
         if state.is_running:
             try:
+                # Fetching data for EURUSD
                 df = yf.download("EURUSD=X", interval=state.timeframe, period="1d", progress=False)
                 if not df.empty:
-                    if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-                    df.columns = [c.lower() for c in df.columns]
-                    
-                    state.last_price = df['close'].iloc[-1]
-                    res = await engine.analyze(df)
-                    if res:
-                        direction, prob, price, target, trend = res
-                        meter = "◼️" * (prob // 10) + "◻️" * (10 - (prob // 10))
-                        
-                        msg = (f"🎯 **QUANTUM SIGNAL: EURUSD**\n"
+                    # Logic is handled inside engine.analyze
+                    engine_out = await engine.analyze(df)
+                    if engine_out:
+                        direction, conf, price, trend = engine_out
+                        meter = "🟦"*(conf//10)+"⬜"*(10-(conf//10))
+                        msg = (f"🎯 **SIGNAL: EURUSD**\n"
                                f"━━━━━━━━━━━━━━━━━━━━\n"
                                f"📍 ACTION: **{direction}**\n"
-                               f"📊 PROBABILITY: [{meter}] {prob}%\n"
+                               f"📊 PROBABILITY: {conf}%\n"
+                               f"💡 METER: [{meter}]\n"
                                f"🕒 TREND: {trend}\n"
-                               f"💰 ENTRY: {price:.5f} | 🔮 TARGET: {target:.5f}\n"
-                               f"━━━━━━━━━━━━━━━━━━━━\n"
-                               f"⚡ TF: {state.timeframe.upper()} | UNRESTRICTED")
-                        await bot_app.bot.send_message(CHAT_ID, msg, parse_mode="Markdown")
-            except Exception as e: print(f"Loop Error: {e}")
+                               f"💰 PRICE: {price:.5f}\n"
+                               f"━━━━━━━━━━━━━━━━━━━━")
+                        await bot_app.bot.send_message(CHAT_ID, msg, parse_mode="Markdown", reply_markup=get_markup())
+            except Exception as e: 
+                print("Loop Error:", e)
         
         await asyncio.sleep(state.check_delay)
 
+# ====================== 6. MAIN ======================
 def main():
     keep_alive()
-    engine = ApexQuantum()
+    engine = ApexPrecision()
     TOKEN = os.environ.get("TELEGRAM_TOKEN", "8556975192:AAHwDlJ6okYa46HEsHq_tZgYhR6V9BTXu6A")
-    application = ApplicationBuilder().token(TOKEN).build()
+    app_bot = ApplicationBuilder().token(TOKEN).build()
     
-    application.add_handler(CommandHandler("start", start_cmd))
-    application.add_handler(CommandHandler("stop", stop_cmd))
-    application.add_handler(CommandHandler("status", status_cmd))
-    application.add_handler(CommandHandler("m1", m1_cmd))
-    application.add_handler(CommandHandler("m5", m5_cmd))
-    application.add_handler(CommandHandler("m15", m15_cmd))
+    app_bot.add_handler(CommandHandler("start", start_cmd))
+    app_bot.add_handler(CommandHandler("stop", stop_cmd))
+    app_bot.add_handler(CallbackQueryHandler(button_handler))
     
     loop = asyncio.get_event_loop()
-    loop.create_task(master_loop(application, engine))
+    loop.create_task(master_loop(app_bot, engine))
     loop.create_task(self_ping())
-    application.run_polling()
+    
+    print("💎 APEX SOVEREIGN ENGINE DEPLOYED")
+    app_bot.run_polling()
 
 if __name__ == "__main__":
     main()
